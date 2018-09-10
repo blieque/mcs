@@ -1,0 +1,257 @@
+#!/bin/bash
+
+# Minecraft Server Script
+#
+# Blieque Mariguan <himself@blieque.co.uk>
+# ISC license applies (https://opensource.org/licenses/ISC).
+
+# CONFIG
+
+# Encrypted DigitalOcean API key
+# To generate a new one:
+#  - Get a new API key with read and write access.
+#  - Save the key to a file (e.g., mcs-key.txt).
+#  - Run "openssl enc -aes-256-cbc -a -in mcs-key.txt"
+#  - Place the result between the quotes here, with newlines removed.
+#  - Delete the file.
+DO_TOKEN_ENC="U2FsdGVkX18YfUyGiggwmyC6fARhC5Goe30EtyCP5Oon657fJ/CUn+h2Qj4FanWjW7ANg5SLN2bIrPacUJTjd7llwxIfW5Ma4cKAyL/WM5neUeCpxPnGKoX/Q+gFmbdg"
+
+# Domain to create subdomain on.
+DOMAIN="blieque.co.uk"
+
+# Subdomain to point to the server.
+SUBDOMAIN="mcs"
+
+# DNS record type to create (probably "A" or "CNAME")/
+RECORD_TYPE="A"
+
+# GLOBALS
+
+name=$(basename "$0")
+[[ "$(whoami)" == "mcs" ]] && is_mcs=1
+
+# FUNCTIONS
+
+# Show a given error message with a prepended string indicating that it is an
+# error and that it's from the script, then exit with the proivded error code.
+#
+# exit_error( int error_code, string error_message )
+function exit_error {
+  if [[ -t 1 ]]; then
+    echo -e "\e[31merror:\e[0m $name: $2"
+  else
+    echo -e "error: $name: $2"
+  fi
+
+  exit $1
+}
+
+# Execute the given string as a command as the user 'mcs'.
+#
+# as_mcs( string command )
+function as_mcs {
+  if [[ $is_mcs ]]; then
+    bash -c "cd ~ && $1"
+  else
+    sudo su mcs -c "cd ~ && $1"
+  fi
+}
+
+# Show help for a command specified by the given string. If none is given, the
+# general help for entire script is shown. After help is printed, the script
+# will exit.
+#
+# show_help( string command )
+function show_help {
+  case $1 in
+
+    # Backup help
+    backup)
+      echo "\
+$name -- Minecraft Server script
+
+Command: backup
+  Create a full copy of a server if it exists.
+"
+      ;;
+
+    # List help
+    list)
+      echo "\
+$name -- Minecraft Server script
+
+Command: list
+  List available Minecraft servers.
+"
+      ;;
+
+    # Start help
+    start)
+      echo "\
+$name -- Minecraft Server script
+
+Command: start
+  Start a server if it exists.
+
+Options:
+  -d, --no-dns  Do not create a new DNS record on startup.\
+"
+      ;;
+
+    # Main help
+    *)
+      echo "\
+$name -- Minecraft Server script
+
+Servers are run as the user 'mcs'. To run the script, your user must be 'mcs' or
+have permission to become 'mcs' with sudo. In the 'mcs' user's home directory
+should be server directories named 'srv-<id>'. These directories must contain a
+'start.sh' script which this script will run as 'mcs'. This lets you manage Java
+options and other commands on a per-server basis.
+
+Examples:
+
+  $name start uhc
+    Start a server called 'uhc'.
+
+  $name start --no-dns snaphot
+    Start server 'snaphot' without creating a DNS record.
+
+Commands:
+  backup        Create a full copy of a server if it exists.
+  help          Show this help.
+  list          List available Minecraft servers.
+  start         Start a server if it exists.
+"
+      ;;
+  esac
+
+  exit 0
+}
+
+# Parse commands
+case $1 in
+
+  # Valid commands
+  backup|list|start)
+    command="$1"
+    ;;
+
+  # Help commands and options
+  help|-h|--help)
+    show_help
+    ;;
+
+  # Unrecognised commands
+  *)
+    exit_error 1 "Command '$1' not recognised. Try '$name help'."
+    ;;
+esac
+
+# Remove first argument from argument array as we just parsed it.
+shift
+
+# Parse options
+for arg in "$@"; do
+  case $arg in
+    # Options
+
+    -h|--help)
+      show_help $command
+      ;;
+
+    -d|--no-dns)
+      option_no_dns=1
+      ;;
+
+    -*|--*)
+      exit_error 2 "Option '$arg' not recognised. Try '$name $command --help'."
+      ;;
+
+    # Server name
+    *)
+      if [[ "$server" == "" ]]; then
+        server="$arg"
+      else
+        exit_error 3 "Argument '$arg' not recognised. Try '$name $command --help'."
+      fi
+  esac
+done
+
+# Take action dependent on the selected command.
+case $command in
+
+  list)
+
+    # List available servers by listing directories in 'mcs's ~/servers.
+    as_mcs "find servers/* -maxdepth 0 -type d -printf \"%f\\n\""
+
+    # TODO: Consider options to extend.
+
+    ;;
+
+  backup)
+
+    echo "debug: Actually backing up"
+
+    # TODO: Implement backups.
+
+    ;;
+
+  start)
+
+    if [[ ! $option_no_dns ]]; then
+      echo "Creating DNS record"
+
+      # Decrypt DigitalOcean API key, getting the decryption key interactively.
+      do_token=$(echo $DO_TOKEN_ENC | openssl enc -aes-256-cbc -a -d)
+
+      # Get current external IP address from icanhazip.com.
+      current_ip=$(curl --silent https://icanhazip.com)
+
+      # If the output of OpenSSL is 64 characters long, we'll assume we have a
+      # valid decrypted key.
+      if [[ ${#do_token} != 64 ]]; then
+        # If not, notify the user and proceed.
+        exit_error 4 "\
+Failed to decrypt DigitalOcean token; no DNS record created.
+Your current IP is $current_ip"
+      else
+        # Create a new DNS record in DigitaOcean.
+        api_response=$(curl \
+          --silent \
+          -X POST \
+          -H "Content-Type: application/json" \
+          -H "Authorization: Bearer $do_token" \
+          -d "{ \"type\": \"$RECORD_TYPE\", \"name\": \"$SUBDOMAIN\", \"data\": \"$current_ip\" }" \
+          https://api.digitalocean.com/v2/domains/$DOMAIN/records)
+
+        # Extract the DigitalOcean ID of the new DNS record so that we can
+        # remove it when the server stops.
+        new_record_id=$(echo $api_response | sed -E 's/.*?"id":([0-9]+).*/\1/')
+
+        # If this wasn't Bash, I'd bother to check this
+        record_created=1
+      fi
+    fi
+
+    # Become the user 'mcs', and attempt to start the server.
+    echo "Starting server $server"
+    as_mcs "cd servers/$server && ./start.sh"
+
+    # When the server stops, remove the DNS record if one was created.
+    if [[ ! $option_no_dns && $record_created ]]; then
+      echo -e "\nRemoving DNS record."
+      curl \
+        -X DELETE \
+        -H "Authorization: Bearer $do_token" \
+        "https://api.digitalocean.com/v2/domains/$DOMAIN/records/$new_record_id"
+    fi
+
+    # Set the API key to a blank key before quitting in case the memory is not
+    # cleared by the shell.
+    do_token='0000000000000000000000000000000000000000000000000000000000000000'
+
+    ;;
+
+esac
